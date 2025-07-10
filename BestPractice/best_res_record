@@ -1,0 +1,52 @@
+-rw-r--r-- 1 root root    277 Jul 10 02:22 xPatch_valacc0.6492_20250710_022237.json
+(llama-factory) root@g2-01:~/zhangbo/patch_feature_quant/results# cat xPatch_valacc0.6492_20250710_022237.json
+{
+  "model": "xPatch",
+  "params": {
+    "patch_len": 8,
+    "stride": 2,
+    "alpha": 0.3,
+    "hidden_size": 256,
+    "learning_rate": 0.01,
+    "weight_decay": 0.001
+  },
+  "best_val_acc": 0.6491935483870968,
+  "best_epoch": 49,
+  "timestamp": "2025-07-10T02:22:37.365324"
+}
+
+
+-rw-r--r-- 1 root root   278 Jul 10 00:32 xPatch_valacc0.6377_20250710_003229.json
+(llama-factory) root@g2-01:~/zhangbo/use/results# cat xPatch_valacc0.6377_20250710_003229.json 
+{
+  "model": "xPatch",
+  "params": {
+    "patch_len": 4,
+    "stride": 2,
+    "alpha": 0.05,
+    "hidden_size": 128,
+    "learning_rate": 0.01,
+    "weight_decay": 0.001
+  },
+  "best_val_acc": 0.6376728110599078,
+  "best_epoch": 36,
+  "timestamp": "2025-07-10T00:32:29.497024"
+}
+
+
+-rw-r--r-- 1 root root   276 Jul 10 00:13 xPatch_valacc0.6486_20250710_001337.json
+(llama-factory) root@g2-01:~/zhangbo/use/results# cat xPatch_valacc0.6486_20250710_001337.json 
+{
+  "model": "xPatch",
+  "params": {
+    "patch_len": 4,
+    "stride": 1,
+    "alpha": 0.1,
+    "hidden_size": 64,
+    "learning_rate": 0.01,
+    "weight_decay": 0.001
+  },
+  "best_val_acc": 0.6486175115207373,
+  "best_epoch": 50,
+  "timestamp": "2025-07-10T00:13:37.758780"
+}

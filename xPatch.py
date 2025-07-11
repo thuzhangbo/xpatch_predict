@@ -457,7 +457,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         
         # 早停检查
         if acc >= target_acc:
-            print(f"\n🎊 找到准确率>0.7的模型! val_acc={acc:.4f}")
+            print(f"\nð 找到准确率>0.7的模型! val_acc={acc:.4f}")
             return best_acc, best_epoch, True
         
         if patience_counter >= patience:

@@ -1,579 +1,15 @@
-"""
-Unified Models for BTC Price Prediction
-
-模型数字映射：
-1 = AdvancedLSTM
-2 = AdvancedGRU
-3 = TimeSeriesTransformer
-4 = CNNLSTMAttention
-5 = OptimizedTCNWithAttention
-6 = EnsembleModel
-7 = MultiScaleTransformer
-8 = TabNetNoEmbeddings
-
-用法：
-from unified_models import get_model_by_number
-model_class = get_model_by_number(1)  # 选择AdvancedLSTM
-model = model_class(...)
-"""
-
-# ========== 1. AdvancedLSTM (from 01_lstm_grid_search.py) ==========
-import torch
-import torch.nn as nn
-
-class AdvancedLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, dropout=0.2, bidirectional=True, attention_type='multihead'):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bidirectional = bidirectional
-        self.num_directions = 2 if bidirectional else 1
-        self.attention_type = attention_type
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=bidirectional,
-            batch_first=True
-        )
-        if attention_type == 'multihead':
-            self.attention = nn.MultiheadAttention(
-                embed_dim=hidden_size * self.num_directions,
-                num_heads=8,
-                dropout=dropout,
-                batch_first=True
-            )
-        elif attention_type == 'self_attention':
-            self.attention = nn.MultiheadAttention(
-                embed_dim=hidden_size * self.num_directions,
-                num_heads=4,
-                dropout=dropout,
-                batch_first=True
-            )
-        elif attention_type == 'bahdanau':
-            self.attention = nn.Sequential(
-                nn.Linear(hidden_size * self.num_directions, hidden_size),
-                nn.Tanh(),
-                nn.Linear(hidden_size, 1),
-                nn.Softmax(dim=1)
-            )
-        self.fc1 = nn.Linear(hidden_size * self.num_directions, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
-        self.fc3 = nn.Linear(hidden_size // 2, 1)
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
-        self.batch_norm1 = nn.BatchNorm1d(hidden_size)
-        self.batch_norm2 = nn.BatchNorm1d(hidden_size // 2)
-        self.relu = nn.ReLU()
-        self.leaky_relu = nn.LeakyReLU(0.1)
-        self.gelu = nn.GELU()
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        if self.attention_type in ['multihead', 'self_attention']:
-            attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
-            attn_out = self.layer_norm(lstm_out + attn_out)
-            pooled = torch.mean(attn_out, dim=1)
-        elif self.attention_type == 'bahdanau':
-            attention_weights = self.attention(lstm_out)
-            pooled = torch.sum(lstm_out * attention_weights, dim=1)
-        else:
-            pooled = torch.mean(lstm_out, dim=1)
-        out = self.fc1(pooled)
-        out = self.batch_norm1(out)
-        out = self.gelu(out)
-        out = self.dropout(out)
-        out = self.fc2(out)
-        out = self.batch_norm2(out)
-        out = self.gelu(out)
-        out = self.dropout(out)
-        out = self.fc3(out)
-        return out
-
-# ========== 2. AdvancedGRU (from 03_gru_grid_search.py) ==========
-class AdvancedGRU(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, dropout=0.2, bidirectional=True, attention_type=None):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bidirectional = bidirectional
-        self.num_directions = 2 if bidirectional else 1
-        self.attention_type = attention_type
-        self.gru = nn.GRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=bidirectional,
-            batch_first=True
-        )
-        if attention_type == 'multihead':
-            self.attention = nn.MultiheadAttention(
-                embed_dim=hidden_size * self.num_directions,
-                num_heads=8,
-                dropout=dropout,
-                batch_first=True
-            )
-        elif attention_type == 'bahdanau':
-            self.attention = nn.Sequential(
-                nn.Linear(hidden_size * self.num_directions, hidden_size),
-                nn.Tanh(),
-                nn.Linear(hidden_size, 1),
-                nn.Softmax(dim=1)
-            )
-        self.fc1 = nn.Linear(hidden_size * self.num_directions, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
-        self.fc3 = nn.Linear(hidden_size // 2, 1)
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
-        self.batch_norm1 = nn.BatchNorm1d(hidden_size)
-        self.batch_norm2 = nn.BatchNorm1d(hidden_size // 2)
-        self.relu = nn.ReLU()
-        self.gelu = nn.GELU()
-    def forward(self, x):
-        gru_out, _ = self.gru(x)
-        if self.attention_type == 'multihead':
-            attn_out, _ = self.attention(gru_out, gru_out, gru_out)
-            attn_out = self.layer_norm(gru_out + attn_out)
-            pooled = torch.mean(attn_out, dim=1)
-        elif self.attention_type == 'bahdanau':
-            attention_weights = self.attention(gru_out)
-            pooled = torch.sum(gru_out * attention_weights, dim=1)
-        else:
-            pooled = torch.mean(gru_out, dim=1)
-        out = self.fc1(pooled)
-        out = self.batch_norm1(out)
-        out = self.gelu(out)
-        out = self.dropout(out)
-        out = self.fc2(out)
-        out = self.batch_norm2(out)
-        out = self.gelu(out)
-        out = self.dropout(out)
-        out = self.fc3(out)
-        return out
-
-# ========== 3. TimeSeriesTransformer (from 02_transformer_grid_search.py) ==========
-class TimeSeriesTransformer(nn.Module):
-    def __init__(self, input_size, d_model, nhead, num_layers, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.input_projection = nn.Linear(input_size, d_model)
-        self.pos_embedding = nn.Parameter(torch.randn(1, 1000, d_model))
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc1 = nn.Linear(d_model, d_model // 2)
-        self.fc2 = nn.Linear(d_model // 2, 1)
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
-        self.relu = nn.ReLU()
-    def forward(self, x):
-        x = self.input_projection(x)
-        seq_len = x.size(1)
-        pos_enc = self.pos_embedding[:, :seq_len, :]
-        x = x + pos_enc
-        x = self.layer_norm(x)
-        x = self.transformer(x)
-        x = torch.mean(x, dim=1)
-        x = self.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return torch.sigmoid(x)
-
-# ========== 4. CNNLSTMAttention (from 04_cnn_lstm_attention.py) ==========
-class CNNLSTMAttention(nn.Module):
-    def __init__(self, input_size, cnn_channels, cnn_kernel, lstm_hidden, lstm_layers, dropout=0.2, bidirectional=True, attention_heads=4):
-        super().__init__()
-        self.cnn = nn.Conv1d(input_size, cnn_channels, kernel_size=cnn_kernel, padding=cnn_kernel//2)
-        self.cnn_bn = nn.BatchNorm1d(cnn_channels)
-        self.relu = nn.ReLU()
-        self.lstm = nn.LSTM(
-            input_size=cnn_channels,
-            hidden_size=lstm_hidden,
-            num_layers=lstm_layers,
-            dropout=dropout if lstm_layers > 1 else 0,
-            bidirectional=bidirectional,
-            batch_first=True
-        )
-        self.num_directions = 2 if bidirectional else 1
-        self.attention = nn.MultiheadAttention(
-            embed_dim=lstm_hidden * self.num_directions,
-            num_heads=attention_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.layer_norm = nn.LayerNorm(lstm_hidden * self.num_directions)
-        self.fc1 = nn.Linear(lstm_hidden * self.num_directions, lstm_hidden)
-        self.fc2 = nn.Linear(lstm_hidden, lstm_hidden // 2)
-        self.fc3 = nn.Linear(lstm_hidden // 2, 1)
-        self.dropout = nn.Dropout(dropout)
-        self.gelu = nn.GELU()
-    def forward(self, x):
-        x = x.transpose(1, 2)
-        x = self.cnn(x)
-        x = self.cnn_bn(x)
-        x = self.relu(x)
-        x = x.transpose(1, 2)
-        lstm_out, _ = self.lstm(x)
-        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
-        attn_out = self.layer_norm(lstm_out + attn_out)
-        pooled = torch.mean(attn_out, dim=1)
-        out = self.gelu(self.fc1(pooled))
-        out = self.dropout(out)
-        out = self.gelu(self.fc2(out))
-        out = self.dropout(out)
-        out = self.fc3(out)
-        return out
-
-# ========== 5. OptimizedTCNWithAttention (from 05_tcn_attention_optimized.py) ==========
-class OptimizedTemporalBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation, padding, dropout=0.2):
-        super().__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, dilation=dilation)
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
-    def forward(self, x):
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.dropout(out)
-        res = x if self.downsample is None else self.downsample(x)
-        # 修正：残差连接前shape对齐
-        if out.shape != res.shape:
-            min_len = min(out.shape[-1], res.shape[-1])
-            out = out[..., :min_len]
-            res = res[..., :min_len]
-        return out + res
-
-class OptimizedTCNWithAttention(nn.Module):
-    def __init__(self, input_size, num_channels, kernel_size=3, dropout=0.2, attention_heads=8):
-        super().__init__()
-        layers = []
-        num_levels = len(num_channels)
-        for i in range(min(num_levels, 2)):
-            dilation_size = 2 ** i
-            in_channels = input_size if i == 0 else num_channels[i-1]
-            out_channels = num_channels[i]
-            layers.append(
-                OptimizedTemporalBlock(
-                    in_channels, out_channels, kernel_size, stride=1,
-                    dilation=dilation_size, padding=(kernel_size-1) * dilation_size, dropout=dropout
-                )
-            )
-        self.network = nn.Sequential(*layers)
-        self.attention = nn.MultiheadAttention(
-            embed_dim=num_channels[-1],
-            num_heads=min(attention_heads, 4),
-            dropout=dropout,
-            batch_first=True
-        )
-        self.layer_norm = nn.LayerNorm(num_channels[-1])
-        self.fc1 = nn.Linear(num_channels[-1], num_channels[-1] // 4)
-        self.fc2 = nn.Linear(num_channels[-1] // 4, 1)
-        self.dropout = nn.Dropout(dropout)
-        self.relu = nn.ReLU()
-    def forward(self, x):
-        x = x.transpose(1, 2)
-        x = self.network(x)
-        x = x.transpose(1, 2)
-        attn_out, _ = self.attention(x, x, x)
-        attn_out = self.layer_norm(x + attn_out)
-        pooled = torch.mean(attn_out, dim=1)
-        out = self.relu(self.fc1(pooled))
-        out = self.dropout(out)
-        out = self.fc2(out)
-        return out
-
-# ========== 6. EnsembleModel (from 06_ensemble_models.py) ==========
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, dropout=0.2):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
-        self.fc = nn.Linear(hidden_size, 1)
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        last_output = lstm_out[:, -1, :]
-        out = self.dropout(last_output)
-        out = self.fc(out)
-        return out
-
-class GRUModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, dropout=0.2):
-        super().__init__()
-        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
-        self.fc = nn.Linear(hidden_size, 1)
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, x):
-        gru_out, _ = self.gru(x)
-        last_output = gru_out[:, -1, :]
-        out = self.dropout(last_output)
-        out = self.fc(out)
-        return out
-
-class TransformerModel(nn.Module):
-    def __init__(self, input_size, d_model, nhead, num_layers, dropout=0.2):
-        super().__init__()
-        self.input_projection = nn.Linear(input_size, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(d_model, 1)
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, x):
-        x = self.input_projection(x)
-        transformer_out = self.transformer(x)
-        pooled = torch.mean(transformer_out, dim=1)
-        out = self.dropout(pooled)
-        out = self.fc(out)
-        return out
-
-class EnsembleModel(nn.Module):
-    def __init__(self, input_size, sequence_length, config):
-        super().__init__()
-        self.models = nn.ModuleDict()
-        self.weights = nn.Parameter(torch.ones(len(config['model_types'])))
-        self.sequence_length = sequence_length
-        for i, model_type in enumerate(config['model_types']):
-            if model_type == 'lstm':
-                self.models[f'lstm_{i}'] = LSTMModel(
-                    input_size=input_size,
-                    hidden_size=config['hidden_sizes'][i],
-                    num_layers=config['num_layers'][i],
-                    dropout=config['dropout']
-                )
-            elif model_type == 'gru':
-                self.models[f'gru_{i}'] = GRUModel(
-                    input_size=input_size,
-                    hidden_size=config['hidden_sizes'][i],
-                    num_layers=config['num_layers'][i],
-                    dropout=config['dropout']
-                )
-            elif model_type == 'transformer':
-                self.models[f'transformer_{i}'] = TransformerModel(
-                    input_size=input_size,
-                    d_model=config['d_models'][i],
-                    nhead=config['nheads'][i],
-                    num_layers=config['num_layers'][i],
-                    dropout=config['dropout']
-                )
-        self.meta_classifier = nn.Sequential(
-            nn.Linear(len(config['model_types']), 64),
-            nn.ReLU(),
-            nn.Dropout(config['dropout']),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Dropout(config['dropout']),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
-        )
-    def forward(self, x):
-        predictions = []
-        for name, model in self.models.items():
-            pred = model(x)
-            predictions.append(pred)
-        stacked_preds = torch.cat(predictions, dim=1)
-        weighted_preds = stacked_preds * torch.softmax(self.weights, dim=0)
-        final_pred = self.meta_classifier(weighted_preds)
-        return final_pred
-
-# ========== 7. MultiScaleTransformer (from 07_multiscale_transformer.py) ==========
-class MultiScaleAttention(nn.Module):
-    def __init__(self, d_model, nhead, dropout=0.1):
-        super().__init__()
-        self.attention = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
-        self.norm = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, x):
-        attn_out, _ = self.attention(x, x, x)
-        return self.norm(x + self.dropout(attn_out))
-
-class MultiScaleTransformer(nn.Module):
-    def __init__(self, input_size, d_model, nhead, num_layers, num_scales=3, dropout=0.2):
-        super().__init__()
-        self.input_projection = nn.Linear(input_size, d_model)
-        self.scale_projections = nn.ModuleList([
-            nn.Linear(d_model, d_model) for _ in range(num_scales)
-        ])
-        self.transformer_layers = nn.ModuleList([
-            nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, dropout=dropout, batch_first=True
-            ) for _ in range(num_layers)
-        ])
-        self.scale_attentions = nn.ModuleList([
-            MultiScaleAttention(d_model, nhead, dropout) for _ in range(num_scales)
-        ])
-        self.fc1 = nn.Linear(d_model * num_scales, d_model)
-        self.fc2 = nn.Linear(d_model, d_model // 2)
-        self.fc3 = nn.Linear(d_model // 2, 1)
-        self.dropout = nn.Dropout(dropout)
-        self.relu = nn.ReLU()
-    def forward(self, x):
-        x = self.input_projection(x)
-        scale_outputs = []
-        for i, (scale_proj, scale_attn) in enumerate(zip(self.scale_projections, self.scale_attentions)):
-            scale_x = scale_proj(x)
-            for transformer_layer in self.transformer_layers:
-                scale_x = transformer_layer(scale_x)
-            scale_x = scale_attn(scale_x)
-            scale_pooled = torch.mean(scale_x, dim=1)
-            scale_outputs.append(scale_pooled)
-        concatenated = torch.cat(scale_outputs, dim=1)
-        out = self.relu(self.fc1(concatenated))
-        out = self.dropout(out)
-        out = self.relu(self.fc2(out))
-        out = self.dropout(out)
-        out = self.fc3(out)
-        return out
-
-# ========== 8. TabNetNoEmbeddings (极简可用测试版) ==========
+import os
+import json
 import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
 
-class TabNetNoEmbeddings(nn.Module):
-    def __init__(self, input_dim, output_dim, n_d=4, n_a=4, n_steps=1, gamma=1.1, n_ind=1, n_shared=1, virtual_batch_size=2, **kwargs):
-        super().__init__()
-        # 极简实现：只做一次特征变换和一次全连接，保证shape兼容
-        self.fc1 = nn.Linear(input_dim, n_d)
-        self.fc2 = nn.Linear(n_d, output_dim)
-        self.relu = nn.ReLU()
-    def forward(self, x):
-        x = self.relu(self.fc1(x))
-        out = self.fc2(x)
-        m_loss = torch.tensor(0.0, device=x.device)  # 占位
-        return out, m_loss
-
-# ========== 工厂函数：数字选择模型 ==========
-def get_model_by_number(num):
-    """
-    根据数字选择模型类
-    
-    Args:
-        num (int): 模型编号 (1-8)
-    
-    Returns:
-        model_class: 对应的模型类，如果编号无效则返回None
-    
-    模型映射：
-    1 = AdvancedLSTM
-    2 = AdvancedGRU  
-    3 = TimeSeriesTransformer
-    4 = CNNLSTMAttention
-    5 = OptimizedTCNWithAttention
-    6 = EnsembleModel
-    7 = MultiScaleTransformer
-    8 = TabNetNoEmbeddings
-    """
-    mapping = {
-        1: AdvancedLSTM,
-        2: AdvancedGRU,
-        3: TimeSeriesTransformer,
-        4: CNNLSTMAttention,
-        5: OptimizedTCNWithAttention,
-        6: EnsembleModel,
-        7: MultiScaleTransformer,
-        8: TabNetNoEmbeddings
-    }
-    return mapping.get(num, None)
-
-def get_model_info():
-    """
-    获取所有模型的信息
-    
-    Returns:
-        dict: 模型编号到模型名称的映射
-    """
-    return {
-        1: "AdvancedLSTM",
-        2: "AdvancedGRU", 
-        3: "TimeSeriesTransformer",
-        4: "CNNLSTMAttention",
-        5: "OptimizedTCNWithAttention",
-        6: "EnsembleModel",
-        7: "MultiScaleTransformer",
-        8: "TabNetNoEmbeddings"
-    }
-
-def print_available_models():
-    """打印所有可用的模型"""
-    print("可用的模型:")
-    print("=" * 50)
-    for num, name in get_model_info().items():
-        print(f"{num}. {name}")
-    print("=" * 50) 
-
-def setup_logging():
-    """设置统一的日志格式"""
-    import logging
-    logging.basicConfig(
-        level=logging.INFO, 
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('training.log'),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
-
-def load_and_preprocess_data(file_path='btcusdt.json'):
-    """统一的数据加载和预处理函数"""
-    import os, json, logging
-    import numpy as np
-    import pandas as pd
-    from sklearn.preprocessing import StandardScaler
-    logger = logging.getLogger(__name__)
-    logger.info("Loading and preprocessing data...")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"数据文件不存在: {file_path}")
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    df = pd.DataFrame(data)
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
-    for col in numeric_columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    df = df.dropna()
-    df['price_change'] = df['close'].pct_change()
-    df['high_low_ratio'] = df['high'] / df['low']
-    df['volume_price_ratio'] = df['volume'] / df['close']
-    df['price_range'] = (df['high'] - df['low']) / df['close']
-    for window in [3, 5, 7, 10, 15, 20, 30, 50]:
-        df[f'sma_{window}'] = df['close'].rolling(window=window).mean()
-        df[f'ema_{window}'] = df['close'].ewm(span=window).mean()
-        df[f'volume_sma_{window}'] = df['volume'].rolling(window=window).mean()
-    df['rsi'] = calculate_rsi(df['close'])
-    df['macd'], df['macd_signal'] = calculate_macd(df['close'])
-    df['bollinger_upper'], df['bollinger_lower'] = calculate_bollinger_bands(df['close'])
-    df['bollinger_width'] = (df['bollinger_upper'] - df['bollinger_lower']) / df['close']
-    for period in [1, 2, 3, 5, 7, 10, 14, 21]:
-        df[f'momentum_{period}'] = df['close'].pct_change(period)
-        df[f'roc_{period}'] = (df['close'] / df['close'].shift(period) - 1) * 100
-    for window in [5, 10, 15, 20, 30]:
-        df[f'volatility_{window}'] = df['close'].rolling(window=window).std()
-    df['hour'] = pd.to_datetime(df['open_time']).dt.hour
-    df['day_of_week'] = pd.to_datetime(df['open_time']).dt.dayofweek
-    df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
-    df = df.dropna()
-    feature_columns = [col for col in df.columns 
-                      if col not in ['target', 'open_time', 'close_time'] and 
-                      df[col].dtype in ['float64', 'int64']]
-    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
-    X = df[feature_columns].values
-    y = df['target'].values[:-1]
-    X = X[:-1]
-    scaler = StandardScaler()
-    X = scaler.fit_transform(X)
-    logger.info(f"Data shape: X={X.shape}, y={y.shape}")
-    return X, y
+# 在文件顶部补充所有特征工程函数的import/export声明，确保add_trade_activity_features、add_market_microstructure_features、add_order_flow_features、add_time_based_features等均被正确定义。
 
 def calculate_rsi(prices, window=14):
+    """计算RSI指标"""
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
@@ -582,189 +18,679 @@ def calculate_rsi(prices, window=14):
     return rsi
 
 def calculate_macd(prices, fast=12, slow=26, signal=9):
+    """计算MACD指标"""
     ema_fast = prices.ewm(span=fast).mean()
     ema_slow = prices.ewm(span=slow).mean()
     macd = ema_fast - ema_slow
     macd_signal = macd.ewm(span=signal).mean()
-    return macd, macd_signal
+    macd_histogram = macd - macd_signal
+    return macd, macd_signal, macd_histogram
 
 def calculate_bollinger_bands(prices, window=20, num_std=2):
+    """计算布林带"""
     sma = prices.rolling(window=window).mean()
     std = prices.rolling(window=window).std()
     upper_band = sma + (std * num_std)
     lower_band = sma - (std * num_std)
-    return upper_band, lower_band
+    return upper_band, lower_band, sma
 
-def create_sequences(X, y, sequence_length):
-    sequences_X = []
-    sequences_y = []
-    for i in range(len(X) - sequence_length):
-        sequences_X.append(X[i:(i + sequence_length)])
-        sequences_y.append(y[i + sequence_length])
-    return np.array(sequences_X, dtype=np.float32), np.array(sequences_y, dtype=np.int64)
+def calculate_stochastic(high, low, close, k_window=14, d_window=3):
+    """计算随机指标"""
+    lowest_low = low.rolling(window=k_window).min()
+    highest_high = high.rolling(window=k_window).max()
+    k_percent = 100 * ((close - lowest_low) / (highest_high - lowest_low))
+    d_percent = k_percent.rolling(window=d_window).mean()
+    return k_percent, d_percent
 
-def get_device(gpu_id=None):
-    import torch, logging
-    if gpu_id is not None and torch.cuda.is_available():
-        device = torch.device(f'cuda:{gpu_id}')
-        torch.cuda.set_device(device)
-        logger = logging.getLogger(__name__)
-        logger.info(f"使用GPU: {torch.cuda.get_device_name(gpu_id)}")
+def calculate_atr(high, low, close, window=14):
+    """计算平均真实波幅"""
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=window).mean()
+    return atr
+
+def calculate_cci(high, low, close, window=20):
+    """计算商品通道指数"""
+    typical_price = (high + low + close) / 3
+    sma_tp = typical_price.rolling(window=window).mean()
+    mad = typical_price.rolling(window=window).apply(lambda x: np.mean(np.abs(x - x.mean())))
+    cci = (typical_price - sma_tp) / (0.015 * mad)
+    return cci
+
+def calculate_williams_r(high, low, close, window=14):
+    """计算威廉指标"""
+    highest_high = high.rolling(window=window).max()
+    lowest_low = low.rolling(window=window).min()
+    williams_r = -100 * ((highest_high - close) / (highest_high - lowest_low))
+    return williams_r
+
+def calculate_mfi(high, low, close, volume, window=14):
+    """计算资金流量指标"""
+    typical_price = (high + low + close) / 3
+    money_flow = typical_price * volume
+    
+    positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0).rolling(window=window).sum()
+    negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0).rolling(window=window).sum()
+    
+    mfi = 100 - (100 / (1 + positive_flow / negative_flow))
+    return mfi
+
+def add_technical_indicators(data):
+    """添加技术指标"""
+    # RSI
+    data['rsi_14'] = calculate_rsi(data['close'], 14)
+    data['rsi_21'] = calculate_rsi(data['close'], 21)
+    
+    # MACD
+    data['macd'], data['macd_signal'], data['macd_histogram'] = calculate_macd(data['close'])
+    
+    # 布林带
+    data['bb_upper'], data['bb_lower'], data['bb_middle'] = calculate_bollinger_bands(data['close'])
+    data['bb_width'] = (data['bb_upper'] - data['bb_lower']) / data['bb_middle']
+    data['bb_position'] = (data['close'] - data['bb_lower']) / (data['bb_upper'] - data['bb_lower'])
+    
+    # 随机指标
+    data['stoch_k'], data['stoch_d'] = calculate_stochastic(data['high'], data['low'], data['close'])
+    
+    # ATR
+    data['atr_14'] = calculate_atr(data['high'], data['low'], data['close'], 14)
+    data['atr_21'] = calculate_atr(data['high'], data['low'], data['close'], 21)
+    
+    # CCI
+    data['cci_20'] = calculate_cci(data['high'], data['low'], data['close'], 20)
+    
+    # 威廉指标
+    data['williams_r_14'] = calculate_williams_r(data['high'], data['low'], data['close'], 14)
+    
+    # 资金流量指标
+    data['mfi_14'] = calculate_mfi(data['high'], data['low'], data['close'], data['volume'], 14)
+    
+    return data
+
+def add_time_features(data):
+    """添加时间特征"""
+    # 转换时间列
+    if 'open_time' in data.columns:
+        data['timestamp'] = pd.to_datetime(data['open_time'])
+    elif 'close_time' in data.columns:
+        data['timestamp'] = pd.to_datetime(data['close_time'])
     else:
-        device = torch.device('cpu')
-        logger = logging.getLogger(__name__)
-        logger.info("使用CPU")
-    return device
+        # 如果没有时间列，创建索引作为时间
+        data['timestamp'] = pd.date_range(start='2023-01-01', periods=len(data), freq='H')
+    
+    # 提取时间特征
+    data['hour'] = data['timestamp'].dt.hour
+    data['day'] = data['timestamp'].dt.day
+    data['month'] = data['timestamp'].dt.month
+    data['weekday'] = data['timestamp'].dt.weekday
+    data['is_weekend'] = data['weekday'].isin([5, 6]).astype(int)
+    data['is_month_start'] = data['timestamp'].dt.is_month_start.astype(int)
+    data['is_month_end'] = data['timestamp'].dt.is_month_end.astype(int)
+    
+    # 周期性特征
+    data['hour_sin'] = np.sin(2 * np.pi * data['hour'] / 24)
+    data['hour_cos'] = np.cos(2 * np.pi * data['hour'] / 24)
+    data['day_sin'] = np.sin(2 * np.pi * data['day'] / 31)
+    data['day_cos'] = np.cos(2 * np.pi * data['day'] / 31)
+    data['month_sin'] = np.sin(2 * np.pi * data['month'] / 12)
+    data['month_cos'] = np.cos(2 * np.pi * data['month'] / 12)
+    data['weekday_sin'] = np.sin(2 * np.pi * data['weekday'] / 7)
+    data['weekday_cos'] = np.cos(2 * np.pi * data['weekday'] / 7)
+    
+    return data
 
-def train_model_with_early_stopping(model, train_loader, val_loader, device, config):
-    import torch, torch.nn as nn, torch.optim as optim
-    from sklearn.metrics import accuracy_score, roc_auc_score
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=config['weight_decay'])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=5, factor=0.5, verbose=False)
-    best_val_acc = 0
-    patience_counter = 0
-    train_losses = []
-    val_accuracies = []
-    val_aucs = []
-    import logging
-    logger = logging.getLogger(__name__)
-    for epoch in range(config['epochs']):
-        model.train()
-        train_loss = 0
-        for batch_X, batch_y in train_loader:
-            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-            optimizer.zero_grad()
-            outputs = model(batch_X).squeeze()
-            loss = criterion(outputs, batch_y.float())
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            train_loss += loss.item()
-        model.eval()
-        val_predictions = []
-        val_targets = []
-        val_probabilities = []
-        with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-                outputs = model(batch_X).squeeze()
-                probs = torch.sigmoid(outputs).cpu().numpy()
-                predictions = (probs > 0.5).astype(int)
-                val_predictions.extend(predictions)
-                val_targets.extend(batch_y.cpu().numpy())
-                val_probabilities.extend(probs)
-        val_acc = accuracy_score(val_targets, val_predictions)
-        val_auc = roc_auc_score(val_targets, val_probabilities)
-        train_losses.append(train_loss / len(train_loader))
-        val_accuracies.append(val_acc)
-        val_aucs.append(val_auc)
-        scheduler.step(val_acc)
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            patience_counter = 0
-        else:
-            patience_counter += 1
-        if epoch % 10 == 0:
-            logger.info(f"Epoch {epoch}: Train Loss = {train_losses[-1]:.4f}, "
-                       f"Val Acc = {val_acc:.4f}, Val AUC = {val_auc:.4f}")
-        if patience_counter >= config['patience']:
-            logger.info(f"Early stopping at epoch {epoch}")
-            break
-    return {
-        'best_val_acc': best_val_acc,
-        'best_val_auc': max(val_aucs),
-        'train_losses': train_losses,
-        'val_accuracies': val_accuracies,
-        'val_aucs': val_aucs
-    }
+def add_price_features(data):
+    """添加价格特征"""
+    # 基础价格特征
+    data['price_change'] = data['close'].pct_change()
+    data['price_change_abs'] = data['price_change'].abs()
+    data['log_return'] = np.log(data['close'] / data['close'].shift(1))
+    
+    # 价格比率
+    data['high_low_ratio'] = data['high'] / data['low']
+    data['open_close_ratio'] = data['open'] / data['close']
+    data['close_open_ratio'] = data['close'] / data['open']
+    
+    # 价格范围
+    data['price_range'] = (data['high'] - data['low']) / data['close']
+    data['price_range_abs'] = data['high'] - data['low']
+    
+    # 价格位置
+    data['price_position'] = (data['close'] - data['low']) / (data['high'] - data['low'])
+    
+    # 多期收益率
+    for period in [1, 2, 3, 5, 7, 10, 14, 21]:
+        data[f'return_{period}'] = data['close'].pct_change(period)
+        data[f'log_return_{period}'] = np.log(data['close'] / data['close'].shift(period))
+    
+    return data
 
-def evaluate_model(model, test_loader, device):
-    import torch
-    from sklearn.metrics import accuracy_score, roc_auc_score, precision_score, recall_score, f1_score
-    model.eval()
-    test_predictions = []
-    test_targets = []
-    test_probabilities = []
-    with torch.no_grad():
-        for batch_X, batch_y in test_loader:
-            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-            outputs = model(batch_X).squeeze()
-            probs = torch.sigmoid(outputs).cpu().numpy()
-            predictions = (probs > 0.5).astype(int)
-            test_predictions.extend(predictions)
-            test_targets.extend(batch_y.cpu().numpy())
-            test_probabilities.extend(probs)
-    test_acc = accuracy_score(test_targets, test_predictions)
-    test_auc = roc_auc_score(test_targets, test_probabilities)
-    test_precision = precision_score(test_targets, test_predictions, zero_division=0)
-    test_recall = recall_score(test_targets, test_predictions, zero_division=0)
-    test_f1 = f1_score(test_targets, test_predictions, zero_division=0)
-    return {
-        'test_accuracy': test_acc,
-        'test_auc': test_auc,
-        'test_precision': test_precision,
-        'test_recall': test_recall,
-        'test_f1': test_f1,
-        'predictions': test_predictions,
-        'probabilities': test_probabilities,
-        'targets': test_targets
-    }
+def add_volume_features(data):
+    """添加成交量特征"""
+    # 基础成交量特征
+    data['volume_change'] = data['volume'].pct_change()
+    data['volume_sma_5'] = data['volume'].rolling(window=5).mean()
+    data['volume_sma_10'] = data['volume'].rolling(window=10).mean()
+    data['volume_sma_20'] = data['volume'].rolling(window=20).mean()
+    
+    # 成交量比率
+    data['volume_ratio_5'] = data['volume'] / data['volume_sma_5']
+    data['volume_ratio_10'] = data['volume'] / data['volume_sma_10']
+    data['volume_ratio_20'] = data['volume'] / data['volume_sma_20']
+    
+    # 价量关系
+    data['volume_price_ratio'] = data['volume'] / data['close']
+    data['volume_price_change'] = data['volume'] * data['price_change']
+    
+    # VWAP (成交量加权平均价格)
+    data['vwap'] = (data['close'] * data['volume']).rolling(window=20).sum() / data['volume'].rolling(window=20).sum()
+    data['price_vwap_ratio'] = data['close'] / data['vwap']
+    
+    # 成交量波动率
+    data['volume_volatility_10'] = data['volume'].rolling(window=10).std()
+    data['volume_volatility_20'] = data['volume'].rolling(window=20).std()
+    
+    # 基于taker_buy_base_asset_volume的特征
+    if 'taker_buy_base_asset_volume' in data.columns:
+        # 主动买入比例
+        data['taker_buy_ratio'] = data['taker_buy_base_asset_volume'] / data['volume']
+        
+        # 主动卖出比例
+        data['taker_sell_ratio'] = 1 - data['taker_buy_ratio']
+        
+        # 买卖压力指标
+        data['buy_sell_pressure'] = data['taker_buy_ratio'] - data['taker_sell_ratio']
+        
+        # 主动买入变化率
+        data['taker_buy_change'] = data['taker_buy_base_asset_volume'].pct_change()
+        
+        # 主动买入移动平均
+        data['taker_buy_sma_5'] = data['taker_buy_base_asset_volume'].rolling(window=5).mean()
+        data['taker_buy_sma_10'] = data['taker_buy_base_asset_volume'].rolling(window=10).mean()
+        data['taker_buy_sma_20'] = data['taker_buy_base_asset_volume'].rolling(window=20).mean()
+        
+        # 主动买入比率
+        data['taker_buy_ratio_5'] = data['taker_buy_base_asset_volume'] / data['taker_buy_sma_5']
+        data['taker_buy_ratio_10'] = data['taker_buy_base_asset_volume'] / data['taker_buy_sma_10']
+        data['taker_buy_ratio_20'] = data['taker_buy_base_asset_volume'] / data['taker_buy_sma_20']
+        
+        # 主动买入强度 (相对于价格变化)
+        data['taker_buy_intensity'] = data['taker_buy_ratio'] * data['price_change'].abs()
+        
+        # 主动买入趋势
+        data['taker_buy_trend_5'] = np.where(data['taker_buy_sma_5'] > data['taker_buy_sma_5'].shift(1), 1, -1)
+        data['taker_buy_trend_10'] = np.where(data['taker_buy_sma_10'] > data['taker_buy_sma_10'].shift(1), 1, -1)
+        
+        # 主动买入波动率
+        data['taker_buy_volatility_10'] = data['taker_buy_base_asset_volume'].rolling(window=10).std()
+        data['taker_buy_volatility_20'] = data['taker_buy_base_asset_volume'].rolling(window=20).std()
+        
+        # 主动买入与总成交量关系
+        data['taker_buy_volume_ratio'] = data['taker_buy_base_asset_volume'] / data['volume']
+        data['taker_buy_volume_change'] = data['taker_buy_volume_ratio'].pct_change()
+        
+        # 主动买入价格影响
+        data['taker_buy_price_impact'] = data['taker_buy_ratio'] * data['price_change']
+        
+        # 主动买入异常值检测
+        data['taker_buy_zscore'] = (data['taker_buy_base_asset_volume'] - data['taker_buy_sma_20']) / data['taker_buy_volatility_20']
+        data['taker_buy_anomaly'] = np.where(data['taker_buy_zscore'].abs() > 2, 1, 0)
+    
+    # 基于taker_buy_quote_asset_volume的特征 (美元金额)
+    if 'taker_buy_quote_asset_volume' in data.columns:
+        # 主动买入金额变化率
+        data['taker_buy_amount_change'] = data['taker_buy_quote_asset_volume'].pct_change()
+        
+        # 主动买入金额移动平均
+        data['taker_buy_amount_sma_5'] = data['taker_buy_quote_asset_volume'].rolling(window=5).mean()
+        data['taker_buy_amount_sma_10'] = data['taker_buy_quote_asset_volume'].rolling(window=10).mean()
+        data['taker_buy_amount_sma_20'] = data['taker_buy_quote_asset_volume'].rolling(window=20).mean()
+        
+        # 主动买入金额比率
+        data['taker_buy_amount_ratio_5'] = data['taker_buy_quote_asset_volume'] / data['taker_buy_amount_sma_5']
+        data['taker_buy_amount_ratio_10'] = data['taker_buy_quote_asset_volume'] / data['taker_buy_amount_sma_10']
+        
+        # 平均买入价格
+        data['avg_buy_price'] = data['taker_buy_quote_asset_volume'] / data['taker_buy_base_asset_volume']
+        data['avg_buy_price_ratio'] = data['avg_buy_price'] / data['close']
+        
+        # 买入金额强度
+        data['taker_buy_amount_intensity'] = data['taker_buy_quote_asset_volume'] / data['volume']
+    
+    return data
 
-def save_results(result, config, model_name, result_file):
-    import json, logging
-    from datetime import datetime
-    output = {
-        'model_name': model_name,
-        'config': config,
-        'result': result,
-        'timestamp': datetime.now().isoformat(),
-        'test_accuracy': float(result['test_accuracy']),
-        'test_auc': float(result['test_auc']),
-        'test_f1': float(result['test_f1'])
-    }
-    with open(result_file, 'w') as f:
-        json.dump(output, f, indent=2)
-    logger = logging.getLogger(__name__)
-    logger.info(f"结果已保存到: {result_file}")
+def add_volatility_features(data):
+    """添加波动率特征"""
+    # 价格波动率
+    for window in [5, 10, 15, 20, 30]:
+        data[f'volatility_{window}'] = data['close'].rolling(window=window).std()
+        data[f'volatility_ratio_{window}'] = data[f'volatility_{window}'] / data['close']
+    
+    # 真实波动率 (基于ATR)
+    data['true_volatility'] = data['atr_14'] / data['close']
+    
+    # 波动率变化
+    data['volatility_change_10'] = data['volatility_10'].pct_change()
+    data['volatility_change_20'] = data['volatility_20'].pct_change()
+    
+    # 波动率比率
+    data['volatility_ratio_short_long'] = data['volatility_10'] / data['volatility_20']
+    
+    return data
 
-def load_config(config_path):
-    import json
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-    defaults = {
-        'sequence_length': 50,
-        'batch_size': 256,
-        'epochs': 100,
-        'patience': 10,
-        'learning_rate': 0.001,
-        'weight_decay': 1e-5,
-        'dropout': 0.2,
-        'bidirectional': True,
-        'attention_heads': 8,
-        'cnn_kernel': 3,
-        'lstm_layers': 2,
-        'channels_1': 64,
-        'channels_2': 128,
-        'channels_3': 256,
-        'kernel_size': 3
-    }
-    for key, default_value in defaults.items():
-        if key not in config:
-            config[key] = default_value
-    return config
+def add_momentum_features(data):
+    """添加动量特征"""
+    # 价格动量
+    for period in [1, 2, 3, 5, 7, 10, 14, 21]:
+        data[f'momentum_{period}'] = data['close'].pct_change(period)
+        data[f'roc_{period}'] = (data['close'] / data['close'].shift(period) - 1) * 100
+    
+    # 相对强弱
+    data['relative_strength_5'] = data['close'] / data['close'].rolling(window=5).mean()
+    data['relative_strength_10'] = data['close'] / data['close'].rolling(window=10).mean()
+    data['relative_strength_20'] = data['close'] / data['close'].rolling(window=20).mean()
+    
+    # 动量振荡器
+    data['momentum_oscillator_5'] = (data['close'] - data['close'].shift(5)) / data['close'].shift(5)
+    data['momentum_oscillator_10'] = (data['close'] - data['close'].shift(10)) / data['close'].shift(10)
+    
+    return data
 
-def parse_args():
-    import argparse
-    parser = argparse.ArgumentParser(description='BTC Price Prediction Model Training')
-    parser.add_argument('--config', type=str, required=True, help='配置文件路径')
-    parser.add_argument('--result_file', type=str, required=True, help='结果文件路径')
-    parser.add_argument('--gpu', type=int, default=None, help='GPU ID (可选)')
-    parser.add_argument('--data_file', type=str, default='btcusdt.json', help='数据文件路径')
-    return parser.parse_args()
+def add_trend_features(data):
+    """添加趋势特征"""
+    # 移动平均线
+    for window in [3, 5, 7, 10, 15, 20, 30, 50]:
+        data[f'sma_{window}'] = data['close'].rolling(window=window).mean()
+        data[f'ema_{window}'] = data['close'].ewm(span=window).mean()
+        
+        # 价格与移动平均线的关系
+        data[f'price_sma_ratio_{window}'] = data['close'] / data[f'sma_{window}']
+        data[f'price_ema_ratio_{window}'] = data['close'] / data[f'ema_{window}']
+    
+    # 趋势强度
+    data['trend_strength_5'] = (data['sma_5'] - data['sma_20']) / data['sma_20']
+    data['trend_strength_10'] = (data['sma_10'] - data['sma_30']) / data['sma_30']
+    
+    # 趋势方向
+    data['trend_direction_5'] = np.where(data['sma_5'] > data['sma_5'].shift(1), 1, -1)
+    data['trend_direction_10'] = np.where(data['sma_10'] > data['sma_10'].shift(1), 1, -1)
+    data['trend_direction_20'] = np.where(data['sma_20'] > data['sma_20'].shift(1), 1, -1)
+    
+    # 移动平均线交叉
+    data['ma_cross_5_20'] = np.where(data['sma_5'] > data['sma_20'], 1, 0)
+    data['ma_cross_10_30'] = np.where(data['sma_10'] > data['sma_30'], 1, 0)
+    
+    return data
 
-def cleanup_gpu_memory():
-    import torch, gc
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        gc.collect() 
+def add_oscillator_features(data):
+    """添加振荡器特征"""
+    # CCI
+    data['cci_10'] = calculate_cci(data['high'], data['low'], data['close'], 10)
+    data['cci_20'] = calculate_cci(data['high'], data['low'], data['close'], 20)
+    
+    # 威廉指标
+    data['williams_r_10'] = calculate_williams_r(data['high'], data['low'], data['close'], 10)
+    data['williams_r_14'] = calculate_williams_r(data['high'], data['low'], data['close'], 14)
+    
+    # 资金流量指标
+    data['mfi_10'] = calculate_mfi(data['high'], data['low'], data['close'], data['volume'], 10)
+    data['mfi_14'] = calculate_mfi(data['high'], data['low'], data['close'], data['volume'], 14)
+    
+    # 振荡器信号
+    data['rsi_signal'] = np.where(data['rsi_14'] > 70, -1, np.where(data['rsi_14'] < 30, 1, 0))
+    data['stoch_signal'] = np.where(data['stoch_k'] > 80, -1, np.where(data['stoch_k'] < 20, 1, 0))
+    data['williams_signal'] = np.where(data['williams_r_14'] > -20, -1, np.where(data['williams_r_14'] < -80, 1, 0))
+    
+    return data
+
+def add_support_resistance_features(data):
+    """添加支撑阻力特征"""
+    # 局部最高点和最低点
+    data['local_high_5'] = data['high'].rolling(window=5, center=True).max()
+    data['local_low_5'] = data['low'].rolling(window=5, center=True).min()
+    data['local_high_10'] = data['high'].rolling(window=10, center=True).max()
+    data['local_low_10'] = data['low'].rolling(window=10, center=True).min()
+    
+    # 支撑阻力位置
+    data['resistance_distance_5'] = (data['local_high_5'] - data['close']) / data['close']
+    data['support_distance_5'] = (data['close'] - data['local_low_5']) / data['close']
+    data['resistance_distance_10'] = (data['local_high_10'] - data['close']) / data['close']
+    data['support_distance_10'] = (data['close'] - data['local_low_10']) / data['close']
+    
+    # 价格通道
+    data['price_channel_5'] = (data['local_high_5'] - data['local_low_5']) / data['close']
+    data['price_channel_10'] = (data['local_high_10'] - data['local_low_10']) / data['close']
+    
+    # 价格在通道中的位置
+    data['channel_position_5'] = (data['close'] - data['local_low_5']) / (data['local_high_5'] - data['local_low_5'])
+    data['channel_position_10'] = (data['close'] - data['local_low_10']) / (data['local_high_10'] - data['local_low_10'])
+    
+    # 枢轴点
+    data['pivot_point'] = (data['high'] + data['low'] + data['close']) / 3
+    data['r1'] = 2 * data['pivot_point'] - data['low']
+    data['s1'] = 2 * data['pivot_point'] - data['high']
+    
+    return data
+
+def add_trade_activity_features(data):
+    """添加交易活跃度特征"""
+    if 'number_of_trades' in data.columns:
+        # 基础交易活跃度特征
+        data['trades_change'] = data['number_of_trades'].pct_change()
+        data['trades_sma_5'] = data['number_of_trades'].rolling(window=5).mean()
+        data['trades_sma_10'] = data['number_of_trades'].rolling(window=10).mean()
+        data['trades_sma_20'] = data['number_of_trades'].rolling(window=20).mean()
+        
+        # 交易活跃度比率
+        data['trades_ratio_5'] = data['number_of_trades'] / data['trades_sma_5']
+        data['trades_ratio_10'] = data['number_of_trades'] / data['trades_sma_10']
+        data['trades_ratio_20'] = data['number_of_trades'] / data['trades_sma_20']
+        
+        # 交易活跃度波动率
+        data['trades_volatility_10'] = data['number_of_trades'].rolling(window=10).std()
+        data['trades_volatility_20'] = data['number_of_trades'].rolling(window=20).std()
+        
+        # 交易活跃度趋势
+        data['trades_trend_5'] = np.where(data['trades_sma_5'] > data['trades_sma_5'].shift(1), 1, -1)
+        data['trades_trend_10'] = np.where(data['trades_sma_10'] > data['trades_sma_10'].shift(1), 1, -1)
+        
+        # 平均每笔交易量
+        data['avg_trade_volume'] = data['volume'] / data['number_of_trades']
+        data['avg_trade_volume_sma_5'] = data['avg_trade_volume'].rolling(window=5).mean()
+        data['avg_trade_volume_sma_10'] = data['avg_trade_volume'].rolling(window=10).mean()
+        
+        # 平均每笔交易金额
+        if 'quote_asset_volume' in data.columns:
+            data['avg_trade_amount'] = data['quote_asset_volume'] / data['number_of_trades']
+            data['avg_trade_amount_sma_5'] = data['avg_trade_amount'].rolling(window=5).mean()
+            data['avg_trade_amount_sma_10'] = data['avg_trade_amount'].rolling(window=10).mean()
+            
+            # 大单交易指标
+            data['large_trade_ratio'] = data['avg_trade_amount'] / data['avg_trade_amount_sma_10']
+            data['large_trade_signal'] = np.where(data['large_trade_ratio'] > 1.5, 1, 0)
+        
+        # 交易活跃度异常值检测
+        data['trades_zscore'] = (data['number_of_trades'] - data['trades_sma_20']) / data['trades_volatility_20']
+        data['trades_anomaly'] = np.where(data['trades_zscore'].abs() > 2, 1, 0)
+        
+        # 交易活跃度与价格关系
+        data['trades_price_correlation_10'] = data['number_of_trades'].rolling(window=10).corr(data['close'])
+        data['trades_volume_correlation_10'] = data['number_of_trades'].rolling(window=10).corr(data['volume'])
+    
+    return data
+
+def add_market_microstructure_features(data):
+    """添加市场微观结构特征"""
+    # 基于quote_asset_volume的特征
+    if 'quote_asset_volume' in data.columns:
+        # 总成交金额特征
+        data['quote_volume_change'] = data['quote_asset_volume'].pct_change()
+        data['quote_volume_sma_5'] = data['quote_asset_volume'].rolling(window=5).mean()
+        data['quote_volume_sma_10'] = data['quote_asset_volume'].rolling(window=10).mean()
+        data['quote_volume_sma_20'] = data['quote_asset_volume'].rolling(window=20).mean()
+        
+        # 成交金额比率
+        data['quote_volume_ratio_5'] = data['quote_asset_volume'] / data['quote_volume_sma_5']
+        data['quote_volume_ratio_10'] = data['quote_asset_volume'] / data['quote_volume_sma_10']
+        data['quote_volume_ratio_20'] = data['quote_asset_volume'] / data['quote_volume_sma_20']
+        
+        # 成交金额波动率
+        data['quote_volume_volatility_10'] = data['quote_asset_volume'].rolling(window=10).std()
+        data['quote_volume_volatility_20'] = data['quote_asset_volume'].rolling(window=20).std()
+        
+        # 平均成交价格
+        data['avg_trade_price'] = data['quote_asset_volume'] / data['volume']
+        data['avg_trade_price_ratio'] = data['avg_trade_price'] / data['close']
+        data['price_efficiency'] = 1 - abs(data['avg_trade_price_ratio'] - 1)
+        
+        # 成交金额趋势
+        data['quote_volume_trend_5'] = np.where(data['quote_volume_sma_5'] > data['quote_volume_sma_5'].shift(1), 1, -1)
+        data['quote_volume_trend_10'] = np.where(data['quote_volume_sma_10'] > data['quote_volume_sma_10'].shift(1), 1, -1)
+        
+        # 成交金额异常值
+        data['quote_volume_zscore'] = (data['quote_asset_volume'] - data['quote_volume_sma_20']) / data['quote_volume_volatility_20']
+        data['quote_volume_anomaly'] = np.where(data['quote_volume_zscore'].abs() > 2, 1, 0)
+    
+    # 市场深度指标
+    if all(col in data.columns for col in ['volume', 'quote_asset_volume', 'number_of_trades']):
+        # 市场深度
+        data['market_depth'] = data['quote_asset_volume'] / data['number_of_trades']
+        data['market_depth_sma_10'] = data['market_depth'].rolling(window=10).mean()
+        data['market_depth_ratio'] = data['market_depth'] / data['market_depth_sma_10']
+        
+        # 流动性指标
+        data['liquidity_ratio'] = data['volume'] / data['number_of_trades']
+        data['liquidity_sma_10'] = data['liquidity_ratio'].rolling(window=10).mean()
+        data['liquidity_trend'] = np.where(data['liquidity_sma_10'] > data['liquidity_sma_10'].shift(1), 1, -1)
+        
+        # 交易效率指标
+        data['trade_efficiency'] = data['quote_asset_volume'] / (data['volume'] * data['close'])
+        data['trade_efficiency_sma_10'] = data['trade_efficiency'].rolling(window=10).mean()
+        
+        # 市场活跃度综合指标
+        data['market_activity_score'] = (
+            data['trades_ratio_10'] * 0.4 + 
+            data['quote_volume_ratio_10'] * 0.4 + 
+            data['volume_ratio_10'] * 0.2
+        )
+    
+    return data
+
+def add_order_flow_features(data):
+    """添加订单流特征"""
+    if all(col in data.columns for col in ['taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'volume', 'quote_asset_volume']):
+        # 订单流不平衡
+        data['order_flow_imbalance'] = (data['taker_buy_base_asset_volume'] / data['volume']) - 0.5
+        data['order_flow_imbalance_abs'] = abs(data['order_flow_imbalance'])
+        
+        # 订单流强度
+        data['order_flow_strength'] = data['order_flow_imbalance'] * data['volume']
+        data['order_flow_strength_sma_10'] = data['order_flow_strength'].rolling(window=10).mean()
+        
+        # 订单流趋势
+        data['order_flow_trend_5'] = data['order_flow_imbalance'].rolling(window=5).mean()
+        data['order_flow_trend_10'] = data['order_flow_imbalance'].rolling(window=10).mean()
+        data['order_flow_trend_20'] = data['order_flow_imbalance'].rolling(window=20).mean()
+        
+        # 订单流波动率
+        data['order_flow_volatility_10'] = data['order_flow_imbalance'].rolling(window=10).std()
+        data['order_flow_volatility_20'] = data['order_flow_imbalance'].rolling(window=20).std()
+        
+        # 订单流异常值
+        data['order_flow_zscore'] = (data['order_flow_imbalance'] - data['order_flow_trend_20']) / data['order_flow_volatility_20']
+        data['order_flow_anomaly'] = np.where(data['order_flow_zscore'].abs() > 2, 1, 0)
+        
+        # 订单流与价格关系
+        data['order_flow_price_correlation_10'] = data['order_flow_imbalance'].rolling(window=10).corr(data['price_change'])
+        
+        # 订单流持续性
+        data['order_flow_persistence'] = data['order_flow_imbalance'].rolling(window=5).apply(
+            lambda x: np.sum(np.sign(x) == np.sign(x.iloc[-1])) / len(x)
+        )
+        
+        # 订单流反转信号
+        data['order_flow_reversal'] = np.where(
+            (data['order_flow_imbalance'] > 0.1) & (data['order_flow_imbalance'].shift(1) < -0.1), 1,
+            np.where((data['order_flow_imbalance'] < -0.1) & (data['order_flow_imbalance'].shift(1) > 0.1), -1, 0)
+        )
+    
+    return data
+
+def add_time_based_features(data):
+    """添加基于时间的特征"""
+    # 转换时间列
+    if 'open_time' in data.columns:
+        data['timestamp'] = pd.to_datetime(data['open_time'])
+    elif 'close_time' in data.columns:
+        data['timestamp'] = pd.to_datetime(data['close_time'])
+    else:
+        data['timestamp'] = pd.date_range(start='2023-01-01', periods=len(data), freq='H')
+    
+    # 基础时间特征
+    data['hour'] = data['timestamp'].dt.hour
+    data['day'] = data['timestamp'].dt.day
+    data['month'] = data['timestamp'].dt.month
+    data['weekday'] = data['timestamp'].dt.weekday
+    data['is_weekend'] = data['weekday'].isin([5, 6]).astype(int)
+    data['is_month_start'] = data['timestamp'].dt.is_month_start.astype(int)
+    data['is_month_end'] = data['timestamp'].dt.is_month_end.astype(int)
+    data['is_quarter_start'] = data['timestamp'].dt.is_quarter_start.astype(int)
+    data['is_quarter_end'] = data['timestamp'].dt.is_quarter_end.astype(int)
+    
+    # 周期性特征
+    data['hour_sin'] = np.sin(2 * np.pi * data['hour'] / 24)
+    data['hour_cos'] = np.cos(2 * np.pi * data['hour'] / 24)
+    data['day_sin'] = np.sin(2 * np.pi * data['day'] / 31)
+    data['day_cos'] = np.cos(2 * np.pi * data['day'] / 31)
+    data['month_sin'] = np.sin(2 * np.pi * data['month'] / 12)
+    data['month_cos'] = np.cos(2 * np.pi * data['month'] / 12)
+    data['weekday_sin'] = np.sin(2 * np.pi * data['weekday'] / 7)
+    data['weekday_cos'] = np.cos(2 * np.pi * data['weekday'] / 7)
+    
+    # 交易时段特征
+    data['is_asia_session'] = ((data['hour'] >= 0) & (data['hour'] < 8)).astype(int)
+    data['is_europe_session'] = ((data['hour'] >= 8) & (data['hour'] < 16)).astype(int)
+    data['is_america_session'] = ((data['hour'] >= 16) & (data['hour'] < 24)).astype(int)
+    
+    # 时间间隔特征
+    data['time_since_market_open'] = (data['hour'] + data['weekday'] * 24) % 168  # 一周168小时
+    data['time_since_market_open_sin'] = np.sin(2 * np.pi * data['time_since_market_open'] / 168)
+    data['time_since_market_open_cos'] = np.cos(2 * np.pi * data['time_since_market_open'] / 168)
+    
+    # 季节性特征
+    data['season'] = pd.cut(data['month'], bins=[0, 3, 6, 9, 12], labels=[0, 1, 2, 3])
+    data['season'] = data['season'].cat.codes  # 转换为数值
+    data['season_sin'] = np.sin(2 * np.pi * data['season'] / 4)
+    data['season_cos'] = np.cos(2 * np.pi * data['season'] / 4)
+    
+    return data
+
+def add_advanced_technical_indicators(data):
+    """添加高级技术指标"""
+    # 价格位置指标
+    data['price_position_5'] = (data['close'] - data['low'].rolling(window=5).min()) / (data['high'].rolling(window=5).max() - data['low'].rolling(window=5).min())
+    data['price_position_10'] = (data['close'] - data['low'].rolling(window=10).min()) / (data['high'].rolling(window=10).max() - data['low'].rolling(window=10).min())
+    data['price_position_20'] = (data['close'] - data['low'].rolling(window=20).min()) / (data['high'].rolling(window=20).max() - data['low'].rolling(window=20).min())
+    
+    # 价格效率指标
+    data['price_efficiency_5'] = abs(data['close'] - data['close'].shift(5)) / data['close'].rolling(window=5).apply(lambda x: np.sum(np.abs(x.diff().dropna())))
+    data['price_efficiency_10'] = abs(data['close'] - data['close'].shift(10)) / data['close'].rolling(window=10).apply(lambda x: np.sum(np.abs(x.diff().dropna())))
+    
+    # 价格动量指标
+    data['price_momentum_5'] = data['close'] / data['close'].shift(5) - 1
+    data['price_momentum_10'] = data['close'] / data['close'].shift(10) - 1
+    data['price_momentum_20'] = data['close'] / data['close'].shift(20) - 1
+    
+    # 价格加速度
+    data['price_acceleration_5'] = data['price_momentum_5'] - data['price_momentum_5'].shift(5)
+    data['price_acceleration_10'] = data['price_momentum_10'] - data['price_momentum_10'].shift(10)
+    
+    # 价格波动率指标
+    data['price_volatility_5'] = data['close'].rolling(window=5).std() / data['close'].rolling(window=5).mean()
+    data['price_volatility_10'] = data['close'].rolling(window=10).std() / data['close'].rolling(window=10).mean()
+    data['price_volatility_20'] = data['close'].rolling(window=20).std() / data['close'].rolling(window=20).mean()
+    
+    # 价格趋势强度
+    data['trend_strength_5'] = abs(data['sma_5'] - data['sma_20']) / data['sma_20']
+    data['trend_strength_10'] = abs(data['sma_10'] - data['sma_30']) / data['sma_30']
+    
+    # 价格反转信号
+    data['price_reversal_5'] = np.where(
+        (data['close'] > data['high'].shift(1)) & (data['close'].shift(1) < data['low'].shift(2)), 1,
+        np.where((data['close'] < data['low'].shift(1)) & (data['close'].shift(1) > data['high'].shift(2)), -1, 0)
+    )
+    
+    return data
+
+def add_volume_price_relationship_features(data):
+    """添加价量关系特征"""
+    # 价量相关性
+    data['volume_price_correlation_5'] = data['volume'].rolling(window=5).corr(data['close'])
+    data['volume_price_correlation_10'] = data['volume'].rolling(window=10).corr(data['close'])
+    data['volume_price_correlation_20'] = data['volume'].rolling(window=20).corr(data['close'])
+    
+    # 价量背离指标
+    data['volume_price_divergence_5'] = np.where(
+        (data['close'] > data['close'].shift(1)) & (data['volume'] < data['volume'].shift(1)), 1,
+        np.where((data['close'] < data['close'].shift(1)) & (data['volume'] > data['volume'].shift(1)), -1, 0)
+    )
+    
+    # 价量确认指标
+    data['volume_price_confirmation_5'] = np.where(
+        (data['close'] > data['close'].shift(1)) & (data['volume'] > data['volume'].shift(1)), 1,
+        np.where((data['close'] < data['close'].shift(1)) & (data['volume'] < data['volume'].shift(1)), -1, 0)
+    )
+    
+    # 价量比率
+    data['volume_price_ratio'] = data['volume'] / data['close']
+    data['volume_price_ratio_sma_10'] = data['volume_price_ratio'].rolling(window=10).mean()
+    data['volume_price_ratio_std_10'] = data['volume_price_ratio'].rolling(window=10).std()
+    
+    # 价量效率
+    data['volume_price_efficiency'] = abs(data['price_change']) / data['volume_price_ratio']
+    data['volume_price_efficiency_sma_10'] = data['volume_price_efficiency'].rolling(window=10).mean()
+    
+    return data
+
+def load_and_preprocess_data_advanced_no_leak(file_path='btcusdt.json', sequence_length=30, dropna=True, train_ratio=0.8):
+    """无泄露的增强版数据加载和特征工程"""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"数据文件不存在: {file_path}")
+    print(f"正在加载数据文件: {file_path}")
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    df = pd.DataFrame(data)
+    print(f"原始数据形状: {df.shape}")
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    if 'open_time' in df.columns:
+        df = df.sort_values('open_time').reset_index(drop=True)
+    elif 'close_time' in df.columns:
+        df = df.sort_values('close_time').reset_index(drop=True)
+    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
+    train_size = int(len(df) * train_ratio)
+    df_train = df.iloc[:train_size].reset_index(drop=True)
+    df_val = df.iloc[train_size:].reset_index(drop=True)
+    def feature_engineering(sub_df):
+        sub_df = add_technical_indicators(sub_df)
+        sub_df = add_time_features(sub_df)
+        sub_df = add_price_features(sub_df)
+        sub_df = add_volume_features(sub_df)
+        sub_df = add_volatility_features(sub_df)
+        sub_df = add_momentum_features(sub_df)
+        sub_df = add_trend_features(sub_df)
+        sub_df = add_oscillator_features(sub_df)
+        sub_df = add_support_resistance_features(sub_df)
+        sub_df = add_trade_activity_features(sub_df)
+        sub_df = add_market_microstructure_features(sub_df)
+        sub_df = add_order_flow_features(sub_df)
+        sub_df = add_time_based_features(sub_df)
+        sub_df = add_advanced_technical_indicators(sub_df)
+        sub_df = add_volume_price_relationship_features(sub_df)
+        if dropna:
+            sub_df = sub_df.dropna()
+        return sub_df
+    df_train_feat = feature_engineering(df_train.copy())
+    df_val_feat = feature_engineering(df_val.copy())
+    feature_columns = [col for col in df_train_feat.columns if col not in ['target', 'open_time', 'close_time', 'timestamp'] and df_train_feat[col].dtype in ['float64', 'int64']]
+    X_train = df_train_feat[feature_columns].values[:-1]
+    y_train = df_train_feat['target'].values[:-1]
+    X_val = df_val_feat[feature_columns].values[:-1]
+    y_val = df_val_feat['target'].values[:-1]
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_val = scaler.transform(X_val)
+    def create_sequences(X, y, sequence_length):
+        X_seq, y_seq = [], []
+        for i in range(len(X) - sequence_length):
+            X_seq.append(X[i:i+sequence_length])
+            y_seq.append(y[i+sequence_length])
+        return np.array(X_seq, dtype=np.float32), np.array(y_seq, dtype=np.int64)
+    X_train_seq, y_train_seq = create_sequences(X_train, y_train, sequence_length)
+    X_val_seq, y_val_seq = create_sequences(X_val, y_val, sequence_length)
+    print(f"无泄露特征工程完成，train特征数: {len(feature_columns)}，train样本: {X_train_seq.shape[0]}，val样本: {X_val_seq.shape[0]}")
+    return X_train_seq, y_train_seq, X_val_seq, y_val_seq, feature_columns 
